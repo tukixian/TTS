@@ -176,7 +176,7 @@ def main():
     # load w2v_bert model 
     # huggingface网络加载失败，采用本地加载模型
     # 在/opt/conda/envs/coqui/lib/python3.10/site-packages/fairseq2/models/utils/generic_loaders.py 239行
-    # 增加了 Path("/workspace/pretrained/w2v-bert/conformer_shaw.pt")
+    # 增加了path = Path("/workspace/pretrained/w2v-bert/conformer_shaw.pt")
     model.w2v_bert = load_conformer_shaw_model("conformer_shaw", device=torch.device('cuda'), dtype=torch.float32)
     model.w2v_bert.eval()
 
