@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Union
 
 import torch
+import math
 import torch.nn as nn
 import torchaudio
 from coqpit import Coqpit
@@ -20,6 +21,22 @@ from TTS.tts.models.base_tts import BaseTTS
 from TTS.tts.models.xtts import Xtts, XttsArgs, XttsAudioConfig
 from TTS.utils.io import load_fsspec
 
+from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
+from fairseq2.memory import MemoryBlock
+from fairseq2.nn.padding import get_seqs_and_padding_mask
+from fairseq2.data import Collater
+from pathlib import Path
+
+audio_decoder = AudioDecoder(dtype=torch.float32, device=torch.device('cuda'))
+fbank_converter = WaveformToFbankConverter(
+    num_mel_bins=80,
+    waveform_scale=2**15,
+    channel_last=True,
+    standardize=True,
+    device=torch.device('cuda'),
+    dtype=torch.float32,
+)
+collater = Collater(pad_value=1)
 
 @dataclass
 class GPTTrainerConfig(XttsConfig):
@@ -197,6 +214,8 @@ class GPTTrainer(BaseTTS):
             mel_norm_file=self.args.mel_norm_file, sampling_rate=config.audio.dvae_sample_rate
         )
 
+        self.w2v_bert = None
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -210,6 +229,7 @@ class GPTTrainer(BaseTTS):
                 cond_idxs, 
                 cond_lens, 
                 his_cond,
+                his_semantics,
                 speaker_embedding):
         """
         Forward pass that uses both text and voice in either text conditioning mode or voice conditioning mode
@@ -233,6 +253,7 @@ class GPTTrainer(BaseTTS):
             cond_lens=cond_lens,
 
             his_cond = his_cond,
+            his_semantics = his_semantics,
             speaker_embedding=speaker_embedding
         )
         return losses
@@ -280,6 +301,31 @@ class GPTTrainer(BaseTTS):
         # get the conditioning embeddings
         # batch["his_cond"] = paired_conditioning_mel
         return his_conditioning_mel
+
+    @torch.no_grad()
+    def get_semantics(self, batch, sample_rate):
+
+        B, num_cond, C, T = batch["his_cond"].size()
+        sample = batch['his_cond']
+        sample = sample.repeat(1, 1, 2, 1).permute(0, 1, 3, 2)
+        sample = torch.reshape(sample, (B * num_cond * T, 2))
+
+        decoded_audio = {
+            'sample_rate': sample_rate,
+            'waveform': sample,
+            'format': None                    
+        }
+        src = collater(fbank_converter(decoded_audio))["fbank"]
+        seqs, padding_mask = get_seqs_and_padding_mask(src)
+
+        with torch.inference_mode():
+            seqs, padding_mask = self.w2v_bert.encoder_frontend(seqs, padding_mask)
+            seqs, padding_mask = self.w2v_bert.encoder(seqs, padding_mask)
+
+        if seqs.size(1) % 2 == 1:
+            return torch.reshape(seqs[:, 1:, :], (B, int(seqs.size(1) / B), 1024))
+        else:
+            return torch.reshape(seqs, (B, int(seqs.size(1) / B), 1024))
 
     @torch.no_grad()
     def get_speaker_embedding(self, batch):
@@ -333,6 +379,7 @@ class GPTTrainer(BaseTTS):
 
         # batch['speaker_embedding'] = self.xtts.get(batch['wav'], 24000)
         batch['speaker_embedding'] = self.get_speaker_embedding(batch)
+        batch['his_semantics'] = self.get_semantics(batch, self.config.audio.sample_rate).clone()
 
         # delete useless batch tensors
         del batch["padded_text"]
@@ -352,6 +399,7 @@ class GPTTrainer(BaseTTS):
         cond_lens = batch["cond_lens"]
         
         his_cond = batch["his_cond_mels"]
+        his_semantics = batch['his_semantics']
         sample_idx = batch['sample_idx']
         speaker_embedding = batch['speaker_embedding']
 
@@ -365,6 +413,7 @@ class GPTTrainer(BaseTTS):
             cond_lens,
             
             his_cond,
+            his_semantics,
             speaker_embedding
         )
         loss_dict["loss_text_ce"] = loss_text * self.args.gpt_loss_text_ce_weight

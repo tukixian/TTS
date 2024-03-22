@@ -74,7 +74,6 @@ def get_his_audio(sample):
                 return [audiopath, audiopath]
 
 
-
 class XTTSDataset(torch.utils.data.Dataset):
     def __init__(self, config, samples, tokenizer, sample_rate, is_eval=False):
         self.config = config

@@ -13,6 +13,22 @@ from TTS.tts.layers.xtts.gpt_inference import GPT2InferenceModel
 from TTS.tts.layers.xtts.latent_encoder import ConditioningEncoder
 from TTS.tts.layers.xtts.perceiver_encoder import PerceiverResampler
 
+from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
+from fairseq2.memory import MemoryBlock
+from fairseq2.nn.padding import get_seqs_and_padding_mask
+from fairseq2.data import Collater
+from pathlib import Path
+
+audio_decoder = AudioDecoder(dtype=torch.float32, device=torch.device('cuda'))
+fbank_converter = WaveformToFbankConverter(
+    num_mel_bins=80,
+    waveform_scale=2**15,
+    channel_last=True,
+    standardize=True,
+    device=torch.device('cuda'),
+    dtype=torch.float32,
+)
+collater = Collater(pad_value=1)
 
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
@@ -142,6 +158,7 @@ class GPT(nn.Module):
         self.mel_embedding = nn.Embedding(self.num_audio_tokens, model_dim)
 
         self.speaker_embedding_linear = nn.Linear(512, 1024)
+        self.semantics_layer = nn.LSTM(input_size=1024, hidden_size=1024, num_layers=2, batch_first=True)
 
         (
             self.gpt,
@@ -382,6 +399,7 @@ class GPT(nn.Module):
         cond_lens=None,
         cond_latents=None,
         his_cond=None,
+        his_semantics = None,
         his_latents=None,
         speaker_embedding=None,
         speaker_idx=None,
@@ -519,6 +537,7 @@ class GPT(nn.Module):
             if cond_latents is None:
                 cond_latents = self.get_style_emb(cond_mels).transpose(1, 2)
                 his_latents = torch.zeros_like(cond_latents)
+                his_latents += self.semantics_layer(his_semantics)[0][:, -32:, :]
                 # his_latents = self.get_style_emb(his_cond).transpose(1, 2)
                 for i in torch.split(his_cond, 1, dim=1):
                     his_latents += self.get_style_emb(i).transpose(1, 2)
