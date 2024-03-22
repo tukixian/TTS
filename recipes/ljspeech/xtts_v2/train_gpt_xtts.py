@@ -1,3 +1,6 @@
+# python=3.10.13
+# torch=2.1.1+cu121
+
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 os.environ['TRAINER_TELEMETRY'] = '0'
