@@ -322,10 +322,11 @@ class GPTTrainer(BaseTTS):
             seqs, padding_mask = self.w2v_bert.encoder_frontend(seqs, padding_mask)
             seqs, padding_mask = self.w2v_bert.encoder(seqs, padding_mask)
 
-        if seqs.size(1) % 2 == 1:
-            return torch.reshape(seqs[:, 1:, :], (B, int(seqs.size(1) / B), 1024))
+        dim_1 = seqs.size(1) // B
+        if seqs.size(1) % B != 0:
+            return torch.reshape(seqs[:, :dim_1 * B, :], (B, dim_1, 1024))
         else:
-            return torch.reshape(seqs, (B, int(seqs.size(1) / B), 1024))
+            return torch.reshape(seqs, (B, dim_1, 1024))
 
     @torch.no_grad()
     def get_speaker_embedding(self, batch):

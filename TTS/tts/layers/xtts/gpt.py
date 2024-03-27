@@ -13,23 +13,6 @@ from TTS.tts.layers.xtts.gpt_inference import GPT2InferenceModel
 from TTS.tts.layers.xtts.latent_encoder import ConditioningEncoder
 from TTS.tts.layers.xtts.perceiver_encoder import PerceiverResampler
 
-from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
-from fairseq2.memory import MemoryBlock
-from fairseq2.nn.padding import get_seqs_and_padding_mask
-from fairseq2.data import Collater
-from pathlib import Path
-
-audio_decoder = AudioDecoder(dtype=torch.float32, device=torch.device('cuda'))
-fbank_converter = WaveformToFbankConverter(
-    num_mel_bins=80,
-    waveform_scale=2**15,
-    channel_last=True,
-    standardize=True,
-    device=torch.device('cuda'),
-    dtype=torch.float32,
-)
-collater = Collater(pad_value=1)
-
 def null_position_embeddings(range, dim):
     return torch.zeros((range.shape[0], range.shape[1], dim), device=range.device)
 
