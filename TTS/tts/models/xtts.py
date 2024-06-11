@@ -17,6 +17,23 @@ from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer
 from TTS.tts.models.base_tts import BaseTTS
 from TTS.utils.io import load_fsspec
 
+from seamless_communication.models.conformer_shaw import load_conformer_shaw_model
+from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
+from fairseq2.memory import MemoryBlock
+from fairseq2.nn.padding import get_seqs_and_padding_mask
+from fairseq2.data import Collater
+
+audio_decoder = AudioDecoder(dtype=torch.float32, device=torch.device('cuda'))
+fbank_converter = WaveformToFbankConverter(
+    num_mel_bins=80,
+    waveform_scale=2**15,
+    channel_last=True,
+    standardize=True,
+    device=torch.device('cuda'),
+    dtype=torch.float32,
+)
+collater = Collater(pad_value=1)
+
 init_stream_support()
 
 
@@ -183,6 +200,9 @@ class XttsArgs(Coqpit):
     decoder_checkpoint: str = None
     num_chars: int = 255
 
+    max_conditioning_length: int = 132300
+    min_conditioning_length: int = 66150
+
     # XTTS GPT Encoder params
     tokenizer_file: str = ""
     gpt_max_audio_tokens: int = 605
@@ -345,6 +365,31 @@ class Xtts(BaseTTS):
         )
 
     @torch.inference_mode()
+    def get_semantics(self, sample, sample_rate):
+
+        B, num_cond, C, T = sample.size()
+        sample = sample.repeat(1, 1, 2, 1).permute(0, 1, 3, 2)
+        sample = torch.reshape(sample, (B * num_cond * T, 2))
+
+        decoded_audio = {
+            'sample_rate': sample_rate,
+            'waveform': sample,
+            'format': None                    
+        }
+        src = collater(fbank_converter(decoded_audio))["fbank"]
+        seqs, padding_mask = get_seqs_and_padding_mask(src)
+
+        with torch.inference_mode():
+            seqs, padding_mask = self.w2v_bert.encoder_frontend(seqs, padding_mask)
+            seqs, padding_mask = self.w2v_bert.encoder(seqs, padding_mask)
+
+        dim_1 = seqs.size(1) // B
+        if seqs.size(1) % B != 0:
+            return torch.reshape(seqs[:, :dim_1 * B, :], (B, dim_1, 1024))
+        else:
+            return torch.reshape(seqs, (B, dim_1, 1024))
+
+    @torch.inference_mode()
     def get_conditioning_latents(
         self,
         audio_path,
@@ -386,19 +431,23 @@ class Xtts(BaseTTS):
 
         # use sum of history referencds for gpt cond latents
         gpt_his_cond = []
+        gpt_his_sem = []
         for i in audio_paths:
             cond, _, _ = get_prompt_slice(
                     i, 
-                    self.config.max_conditioning_length, 
-                    self.config.min_conditioning_length, 
-                    self.config.input_sample_rate, 
+                    self.args.max_conditioning_length, #6 secs 
+                    self.args.min_conditioning_length, #3 secs
+                    self.args.input_sample_rate, 
                     True
                 )
             gpt_his_cond.append(self.get_gpt_cond_latents(cond, load_sr, length=gpt_cond_len))
+            gpt_his_sem.append(cond)
+
         gpt_his_cond = sum(gpt_his_cond)
+        gpt_his_sem = self.get_semantics(torch.stack(gpt_his_sem).unsqueeze(0), self.args.input_sample_rate)
 
         if dialogue:
-            return gpt_his_cond, speaker_embeddings
+            return gpt_his_cond, speaker_embeddings, gpt_his_sem
 
         else:
             if speaker_embeddings:
@@ -406,7 +455,7 @@ class Xtts(BaseTTS):
                 speaker_embedding = speaker_embedding.mean(dim=0)
 
         # return gpt_cond_latents, speaker_embedding
-        return gpt_his_cond, speaker_embedding
+        return gpt_his_cond, speaker_embedding, None
 
     def synthesize(self, text, config, speaker_wav, language, speaker_idx, **kwargs):
         """Synthesize speech with the given input text.
@@ -503,7 +552,7 @@ class Xtts(BaseTTS):
             Generated audio clip(s) as a torch tensor. Shape 1,S if k=1 else, (k,1,S) where S is the sample length.
             Sample rate is 24kHz.
         """
-        (gpt_cond_latent, speaker_embedding) = self.get_conditioning_latents(
+        (gpt_cond_latent, speaker_embedding, gpt_his_sem) = self.get_conditioning_latents(
             audio_path=ref_audio_path,
             gpt_cond_len=gpt_cond_len,
             max_ref_length=max_ref_len,
@@ -515,6 +564,7 @@ class Xtts(BaseTTS):
             language,
             gpt_cond_latent,
             speaker_embedding,
+            gpt_his_sem,
             speaker_idx=speaker_idx,
             temperature=temperature,
             length_penalty=length_penalty,
@@ -532,6 +582,7 @@ class Xtts(BaseTTS):
         language,
         gpt_cond_latent,
         speaker_embedding,
+        gpt_his_sem,
         speaker_idx,
         # GPT inference
         temperature=0.65,
@@ -583,6 +634,7 @@ class Xtts(BaseTTS):
                 cond_latents=gpt_cond_latent,
                 his_latents=gpt_cond_latent,
                 speaker_embedding=speaker_embedding,
+                his_semantics=gpt_his_sem,
                 speaker_idx=speaker_idx,
                 return_attentions=False,
                 return_latent=True,
@@ -716,9 +768,10 @@ class Xtts(BaseTTS):
         super().eval()
 
     def get_compatible_checkpoint_state_dict(self, model_path):
+
         checkpoint = load_fsspec(model_path, map_location=torch.device("cpu"))["model"]
         # remove xtts gpt trainer extra keys
-        ignore_keys = ["torch_mel_spectrogram_style_encoder", "torch_mel_spectrogram_dvae", "dvae"]
+        ignore_keys = ["torch_mel_spectrogram_style_encoder", "torch_mel_spectrogram_dvae", "dvae", 'w2v_bert']
         for key in list(checkpoint.keys()):
             # check if it is from the coqui Trainer if so convert it
             if key.startswith("xtts."):
@@ -778,6 +831,7 @@ class Xtts(BaseTTS):
             self.load_state_dict(checkpoint, strict=strict)
 
         if eval:
+            self.w2v_bert = load_conformer_shaw_model("conformer_shaw", device=torch.device('cuda'), dtype=torch.float32)
             self.hifigan_decoder.eval()
             self.gpt.init_gpt_for_inference(kv_cache=self.args.kv_cache, use_deepspeed=use_deepspeed)
             self.gpt.eval()

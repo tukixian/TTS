@@ -2,7 +2,7 @@
 # torch=2.1.1+cu121
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 os.environ['TRAINER_TELEMETRY'] = '0'
 
 from trainer import Trainer, TrainerArgs
@@ -29,8 +29,8 @@ OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run", "trai
 # Training Parameters
 OPTIMIZER_WD_ONLY_ON_WEIGHTS = True # for multi-gpu training please make it False
 START_WITH_EVAL = False  # if True it will star with evaluation
-BATCH_SIZE = 3  # set here the batch size
-GRAD_ACUMM_STEPS = 84  # set here the grad accumulation steps
+BATCH_SIZE = 2  # set here the batch size
+GRAD_ACUMM_STEPS = 126  # set here the grad accumulation steps
 # Note: we recommend that BATCH_SIZE * GRAD_ACUMM_STEPS need to be at least 252 for more efficient training. You can increase/decrease BATCH_SIZE but then set GRAD_ACUMM_STEPS accordingly.
 
 # Define here the dataset that you want to use for the fine-tuning on.
@@ -169,7 +169,7 @@ def main():
     # init the model from config and load checkpoint from pretrained
     '/workspace/TTS/recipes/ljspeech/xtts_v2/run/training/XTTS_2.0_BL_WenetSpeech-January-20-2024_03+52AM-0000000/checkpoint_390000.pth'
     # checkpoint_path = '/workspace/TTS/recipes/ljspeech/xtts_v2/run/training/XTTS_2.0_BL_WenetSpeech-January-20-2024_03+52AM-0000000/checkpoint_390000.pth'
-    checkpoint_path = '/workspace/TTS/recipes/ljspeech/xtts_v2/run/training/XTTS_2.0_BL_WenetSpeech-January-25-2024_01+33AM-0000000/checkpoint_390000.pth'
+    checkpoint_path = '/workspace/TTS/recipes/ljspeech/xtts_v2/run/training/XTTS_2.0_BL_WenetSpeech-April-01-2024_02+18AM-3b4c185/best_model_30445.pth'
     model = GPTTrainer.init_from_config(config).to(torch.device('cuda'))
     # before = model.state_dict()
     checkpoint = load_fsspec(checkpoint_path)
